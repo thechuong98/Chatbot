@@ -1,3 +1,4 @@
+import enum
 import torch
 from torch._C import StringType
 from torch.nn.functional import normalize
@@ -10,14 +11,11 @@ import unicodedata
 import itertools
 
 from torchvision import transforms #deal with unicode strings
-from vocabulary import Vocabulary
+from vocabulary import Vocabulary, PAD_TOKEN, SOS_TOKEN, EOS_TOKEN
 import sys
 
 MAX_LENGTH = 10
 MIN_COUNT = 3
-PAD_TOKEN = 0
-SOS_TOKEN = 1
-EOS_TOKEN = 2
 
 #read lines from movie_lines
 def load_lines(filename, fields):
@@ -135,7 +133,7 @@ def trim_rare_word(voc: Vocabulary, pairs, MIN_COUNT):
     return keep_pairs
 
     
-def preprocessing():
+def preprocessing(preprocessed = 0):
     corpus_name = "cornell"
     corpus = os.path.join(corpus_name)
     datafile = os.path.join(sys.path[0], corpus, "formatted_movie_lines.txt")
@@ -147,27 +145,23 @@ def preprocessing():
 
     MOVIE_LINES_FIELDS = ['lineID', 'characterID', 'movieID', 'character', 'text']
     MOVIE_CONVERSATIONS_FIELDS = ['character1ID', 'character2ID', 'movieID', 'utteranceIDs']
-
-    print('\nProcessing the corpus ....')
-    lines = load_lines(os.path.join(sys.path[0], corpus, 'movie_lines.txt'), MOVIE_LINES_FIELDS)
-    print('\nLoading conversations...')
-    conversations = load_conversation(os.path.join(sys.path[0], corpus, 'movie_conversations.txt'), lines, MOVIE_CONVERSATIONS_FIELDS)
-    
-    print("\nWriting formatted file ...")
-    with open(datafile, 'w', encoding='utf-8') as f:
-        #write to csv file
-        writer = csv.writer(f, delimiter=delimiter, lineterminator='\n')
-        for pair in get_sentence_pairs(conversations):
-            writer.writerow(pair)
+    if preprocessed == 0:
+        print('\nProcessing the corpus ....')
+        lines = load_lines(os.path.join(sys.path[0], corpus, 'movie_lines.txt'), MOVIE_LINES_FIELDS)
+        print('\nLoading conversations...')
+        conversations = load_conversation(os.path.join(sys.path[0], corpus, 'movie_conversations.txt'), lines, MOVIE_CONVERSATIONS_FIELDS)
+        
+        print("\nWriting formatted file ...")
+        with open(datafile, 'w', encoding='utf-8') as f:
+            #write to csv file
+            writer = csv.writer(f, delimiter=delimiter, lineterminator='\n')
+            for pair in get_sentence_pairs(conversations):
+                writer.writerow(pair)
 
     save_dir = os.path.join("corpus", "save")
+    
     voc, pairs = load_data(corpus, corpus_name, datafile, save_dir)
     pairs = trim_rare_word(voc, pairs, MIN_COUNT=3)
-
-    ###TO-DO : convert pairs into tensors with a maximum length
-
-    
-    ####
 
     return voc, pairs
 
@@ -178,21 +172,68 @@ def indexes_from_sentence(voc: Vocabulary, sentence):
         voc ([type]): [description]
         sentence ([type]): [description]
     """
-    return [voc.word2index(word) for word in sentence.split(' ')] + [EOS_TOKEN] 
+    return [voc.word2index[word] for word in sentence.split(' ')] + [EOS_TOKEN] 
 
 
+def zero_padding(l, fillvalue=PAD_TOKEN):
+    return list(itertools.zip_longest(*l, fillvalue=fillvalue))
+
+def binary_matrix(l, value=PAD_TOKEN):
+    m = []
+    for i, seq in enumerate(l):
+        m.append([])
+        for token in seq:
+            if token == PAD_TOKEN:
+                m[i].append(0)
+            else:
+                m[i].append(1)
+
+    return m
+    
+def input_var(l, voc):
+    indexes_batch = [indexes_from_sentence(voc, sentence) for sentence in l]
+    lengths = torch.tensor([len(indexes) for indexes in indexes_batch])
+    padded_list = zero_padding(indexes_batch)
+    padded_var = torch.LongTensor(padded_list)
+    return padded_var, lengths
+
+def output_var(l, voc):
+    indexes_batch = [indexes_from_sentence(voc, sentence) for sentence in l]
+    max_target_len = max([len(indexes) for indexes in indexes_batch])
+    padded_list = zero_padding(indexes_batch)
+    mask = binary_matrix(padded_list)
+    mask = torch.BoolTensor(mask)
+    padded_var = torch.LongTensor(padded_list)
+
+    return padded_var, mask, max_target_len
+
+def pairs_to_train_data(voc, pairs):
+    pairs.sort(key=lambda x: len(x[0].split(" ")), reverse=True)
+    inp, outp = [], []
+    for pair in pairs:
+        inp.append(pair[0])
+        outp.append(pair[1])
+    inp, lengths = input_var(inp, voc)
+    outp, mask, max_target_len = output_var(outp, voc)
+    return inp, outp, lengths, mask, max_target_len
 
 
 class CornellDataset(Dataset):
     def __init__(self, voc, pairs, transform = None):
         self.voc = voc
         self.pairs = pairs
-        self.transform = transform
-    
+        self.inp, self.outp, _, _, _= pairs_to_train_data(self.voc, self.pairs)
+
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.to_list()
-        
+        return[self.inp[:, idx], self.outp[:, idx]]
+
+# if __name__ == "__main__":
+#     voc, pairs = preprocessing(preprocessed=1)
+#     data = CornellDataset(voc, pairs)
+#     debug = 1
+

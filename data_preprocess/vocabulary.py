@@ -1,5 +1,4 @@
-from data_preprocess.preprocessing import EOS_TOKEN, PAD_TOKEN, SOS_TOKEN
-
+# from preprocessing import EOS_TOKEN, PAD_TOKEN, SOS_TOKEN
 
 PAD_TOKEN = 0
 SOS_TOKEN = 1
